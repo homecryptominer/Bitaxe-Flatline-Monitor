@@ -1,5 +1,5 @@
 # Bitaxe Flatline Monitor
-# Version 0.05
+# Version 0.05: This release includes the hostname for those people who have multiple Bitaxes running. Also shortened labels for easier reading.
 
 import time
 import requests

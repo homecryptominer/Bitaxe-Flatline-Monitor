@@ -1,5 +1,5 @@
 # Bitaxe Flatline Monitor
-# Version 0.04
+# Version 0.05
 
 import time
 import requests
@@ -10,6 +10,7 @@ import math
 
 # Define ANSI color codes
 COLOR_TIMESTAMP = "\033[92m"  # Green
+COLOR_HOSTNAME = "\033[96m"  # Cyan
 COLOR_UPTIME = "\033[38;5;36m"  # Navy green
 COLOR_HASHRATE = "\033[94m"   # Blue
 COLOR_ASIC_TEMP = "\033[91m"  # Red
@@ -45,6 +46,9 @@ def monitor_bitaxe(ip: str, interval: int = 60):
             response = requests.get(stats_url, timeout=5)
             response.raise_for_status()
             data = response.json()
+            
+            # Get Hostname
+            hostname = data.get("hostname", "N/A")
 
             # Convert hashrate to GH/s
             hashrate = data.get("hashRate", "N/A")
@@ -64,12 +68,13 @@ def monitor_bitaxe(ip: str, interval: int = 60):
             uptime_seconds = data.get("uptimeSeconds", None)
             uptime_str = format_uptime(uptime_seconds)
 
-            now = datetime.now().strftime("%A, %d %B %Y %H:%M:%S")
+            now = datetime.now().strftime("%d %b %Y %H:%M:%S")
             print(f"{COLOR_TIMESTAMP}[{now}]{COLOR_RESET} "
+                  f"Host: {COLOR_HOSTNAME}{hostname}{COLOR_RESET} | "
                   f"Uptime: {COLOR_UPTIME}{uptime_str}{COLOR_RESET} | "
-                  f"Hashrate: {COLOR_HASHRATE}{hashrate} GH/s{COLOR_RESET} | "
-                  f"ASIC Temp: {COLOR_ASIC_TEMP}{asic_temp}°C{COLOR_RESET} | "
-                  f"VR Temp: {COLOR_VR_TEMP}{vr_temp}°C{COLOR_RESET} | "
+                  f"Hash: {COLOR_HASHRATE}{hashrate} GH/s{COLOR_RESET} | "
+                  f"ASIC: {COLOR_ASIC_TEMP}{asic_temp}°C{COLOR_RESET} | "
+                  f"VR: {COLOR_VR_TEMP}{vr_temp}°C{COLOR_RESET} | "
                   f"Shares: {COLOR_SHARES}{shares}{COLOR_RESET} | "
                   f"Restarts: {COLOR_RESTARTS}{restart_count}{COLOR_RESET}")
 

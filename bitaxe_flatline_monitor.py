@@ -1,5 +1,6 @@
 # Bitaxe Flatline Monitor
 # Version 0.05: This release includes the hostname for those people who have multiple Bitaxes running. Also shortened labels for easier reading.
+# Version 0.06: Added icons to output
 
 import time
 import requests
@@ -71,12 +72,12 @@ def monitor_bitaxe(ip: str, interval: int = 60):
             now = datetime.now().strftime("%d %b %Y %H:%M:%S")
             print(f"{COLOR_TIMESTAMP}[{now}]{COLOR_RESET} "
                   f"{COLOR_HOSTNAME}{hostname}{COLOR_RESET}:"
-                  f"⏱  Uptime: {COLOR_UPTIME}{uptime_str}{COLOR_RESET} | "
-                  f"💪 Hash: {COLOR_HASHRATE}{hashrate} GH/s{COLOR_RESET} | "
-                  f"🔥 ASIC: {COLOR_ASIC_TEMP}{asic_temp}°C{COLOR_RESET} / "
+                  f"🕓️ Uptime: {COLOR_UPTIME}{uptime_str}{COLOR_RESET} | "
+                  f"⚡️ Hash: {COLOR_HASHRATE}{hashrate} GH/s{COLOR_RESET} | "
+                  f"🌡️ ASIC: {COLOR_ASIC_TEMP}{asic_temp}°C{COLOR_RESET} / "
                   f"VR: {COLOR_VR_TEMP}{vr_temp}°C{COLOR_RESET} | "
                   f"✅ Shares: {COLOR_SHARES}{shares}{COLOR_RESET} | "
-                  f"Restarts: {COLOR_RESTARTS}{restart_count}{COLOR_RESET}")
+                  f"↩️ Restarts: {COLOR_RESTARTS}{restart_count}{COLOR_RESET}")
 
             if prev_shares is not None and shares == prev_shares:
                 print("⚠️ No new shares detected. Restarting Bitaxe...")

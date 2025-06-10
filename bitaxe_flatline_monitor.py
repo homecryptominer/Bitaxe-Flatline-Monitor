@@ -1,6 +1,5 @@
 # Bitaxe Flatline Monitor
-# Version 0.05: This release includes the hostname for those people who have multiple Bitaxes running. Also shortened labels for easier reading.
-# Version 0.06: Added icons to output
+# Version 0.11
 
 import time
 import requests
@@ -8,6 +7,10 @@ import argparse
 from datetime import datetime, timedelta
 import sys
 import math
+import os
+import logging
+from logging.handlers import TimedRotatingFileHandler
+import re
 
 # Define ANSI color codes
 COLOR_TIMESTAMP = "\033[92m"  # Green
@@ -21,13 +24,7 @@ COLOR_RESTARTS = "\033[96m"   # Cyan
 COLOR_COUNTDOWN = "\033[96m"  # Cyan
 COLOR_RESET = "\033[0m"
 
-def countdown_timer(seconds):
-    for remaining in range(seconds, 0, -1):
-        sys.stdout.write(f"\rNext check in: {COLOR_COUNTDOWN}{remaining:2d} seconds{COLOR_RESET} ")
-        sys.stdout.flush()
-        time.sleep(1)
-    sys.stdout.write("\r" + " " * 30 + "\r")
-
+# Helper function to format uptime
 def format_uptime(uptime_seconds):
     try:
         uptime_td = timedelta(seconds=int(uptime_seconds))
@@ -35,78 +32,181 @@ def format_uptime(uptime_seconds):
     except Exception:
         return "N/A"
 
-def monitor_bitaxe(ip: str, interval: int = 60):
-    prev_shares = None
-    restart_count = 0
-    stats_url = f"http://{ip}/api/system/info"
-    restart_url = f"http://{ip}/api/system/restart"
+# Helper function to strip ANSI codes
+def strip_ansi_codes(s):
+    return re.sub(r'\x1B\[[0-?]*[ -/]*[@-~]', '', s)
 
-    while True:
-        wait_after_restart = False
+# Countdown timer function
+def countdown_timer(seconds):
+    for remaining in range(seconds, 0, -1):
+        sys.stdout.write(f"\rNext check in: {COLOR_COUNTDOWN}{remaining:2d} seconds{COLOR_RESET} ")
+        sys.stdout.flush()
+        time.sleep(1)
+    sys.stdout.write("\r" + " " * 30 + "\r")
+
+# BitaxeMonitor class to handle monitoring for each IP
+class BitaxeMonitor:
+    def __init__(self, ip, interval, file_logger, console_logger):
+        self.ip = ip
+        self.interval = interval
+        self.file_logger = file_logger
+        self.console_logger = console_logger
+        self.prev_shares = None
+        self.restart_count = 0
+        self.stats_url = f"http://{ip}/api/system/info"
+        self.restart_url = f"http://{ip}/api/system/restart"
+
+    def update_status(self):
+        self.timestamp = datetime.now().strftime("%d %b %Y %H:%M:%S")
+        self.hostname = "N/A"
+        self.uptime_str = "N/A"
+        self.hashrate = "N/A"
+        self.asic_temp = "N/A"
+        self.vr_temp = "N/A"
+        self.shares = 0
         try:
-            response = requests.get(stats_url, timeout=5)
+            response = requests.get(self.stats_url, timeout=5)
             response.raise_for_status()
             data = response.json()
-            
-            # Get Hostname
-            hostname = data.get("hostname", "N/A")
-
-            # Convert hashrate to GH/s
+            self.hostname = data.get("hostname", "N/A")
             hashrate = data.get("hashRate", "N/A")
             if isinstance(hashrate, (int, float)):
-                hashrate = math.ceil(hashrate * 10) / 10  # round up to nearest 0.1
+                self.hashrate = math.ceil(hashrate * 10) / 10
             else:
-                hashrate = "N/A"
-
+                self.hashrate = "N/A"
             asic_temp = data.get("temp", "N/A")
-            if isinstance(asic_temp, (int, float)):
-                asic_temp = round(asic_temp, 1)
-
-            vr_temp = data.get("vrTemp", "N/A")
-            shares = data.get("sharesAccepted", 0)
-
-            # New: Get uptime and format it
+            try:
+                self.asic_temp = round(float(asic_temp), 1)
+            except (ValueError, TypeError):
+                self.asic_temp = "N/A"
+            self.vr_temp = data.get("vrTemp", "N/A")
+            self.shares = data.get("sharesAccepted", 0)
             uptime_seconds = data.get("uptimeSeconds", None)
-            uptime_str = format_uptime(uptime_seconds)
-
-            now = datetime.now().strftime("%d %b %Y %H:%M:%S")
-            print(f"{COLOR_TIMESTAMP}[{now}]{COLOR_RESET} "
-                  f"{COLOR_HOSTNAME}{hostname}{COLOR_RESET}:"
-                  f"🕓️ Uptime: {COLOR_UPTIME}{uptime_str}{COLOR_RESET} | "
-                  f"⚡️ Hash: {COLOR_HASHRATE}{hashrate} GH/s{COLOR_RESET} | "
-                  f"🌡️ ASIC: {COLOR_ASIC_TEMP}{asic_temp}°C{COLOR_RESET} / "
-                  f"VR: {COLOR_VR_TEMP}{vr_temp}°C{COLOR_RESET} | "
-                  f"✅ Shares: {COLOR_SHARES}{shares}{COLOR_RESET} | "
-                  f"↩️ Restarts: {COLOR_RESTARTS}{restart_count}{COLOR_RESET}")
-
-            if prev_shares is not None and shares == prev_shares:
-                print("⚠️ No new shares detected. Restarting Bitaxe...")
+            self.uptime_str = format_uptime(uptime_seconds)
+            # Check for stagnant shares
+            if self.prev_shares is not None and self.shares == self.prev_shares:
                 try:
-                    restart_resp = requests.post(restart_url, timeout=5)
+                    restart_resp = requests.post(self.restart_url, timeout=5)
                     if restart_resp.status_code == 200:
-                        restart_count += 1
-                        print("✅ Restart command sent successfully.")
-                        wait_after_restart = True  # Flag to wait after restart
+                        self.restart_count += 1
+                        console_restart_message = f"⚠️ No new shares detected for {COLOR_ASIC_TEMP}{self.hostname}{COLOR_RESET} ({self.ip}). Restarting... ✅ Restart command sent successfully."
+                        file_restart_message = f"⚠️ No new shares detected for {self.hostname} ({self.ip}). Restarting... ✅ Restart command sent successfully."
                     else:
-                        print(f"⚠️ Failed to restart Bitaxe: {restart_resp.status_code}")
+                        console_restart_message = f"⚠️ Failed to restart {COLOR_ASIC_TEMP}{self.hostname}{COLOR_RESET} ({self.ip}): {restart_resp.status_code}"
+                        file_restart_message = f"⚠️ Failed to restart {self.hostname} ({self.ip}): {restart_resp.status_code}"
+                    self.console_logger.info(console_restart_message)
+                    self.file_logger.info(file_restart_message)
                 except requests.RequestException as e:
-                    print(f"🚫 Error sending restart command: {e}")
-
-            prev_shares = shares
-
+                    console_restart_message = f"🚫 Error sending restart command to {COLOR_ASIC_TEMP}{self.hostname}{COLOR_RESET} ({self.ip}): {e}"
+                    file_restart_message = f"🚫 Error sending restart command to {self.hostname} ({self.ip}): {e}"
+                    self.console_logger.info(console_restart_message)
+                    self.file_logger.info(file_restart_message)
+            self.prev_shares = self.shares
         except requests.RequestException as e:
-            print(f"🚫 Error communicating with Bitaxe at {ip}: {e}")
+            error_message = f"🚫 Error communicating with Bitaxe at {self.ip}: {e}"
+            self.console_logger.error(error_message)
+            self.file_logger.error(error_message)
 
-        # Wait for 60 seconds after a restart, or interval otherwise
-        if wait_after_restart:
-            countdown_timer(60)
-        else:
-            countdown_timer(interval)
+    def print_status(self, max_len):
+        padded_hostname = self.hostname.ljust(max_len)
+        colored_padded_hostname = f"{COLOR_HOSTNAME}{padded_hostname}{COLOR_RESET}"
+        # Format ASIC temperature to always show one decimal point
+        asic_temp_str = f"{self.asic_temp:.1f}" if isinstance(self.asic_temp, (int, float)) else self.asic_temp
+        console_message = (f"{COLOR_TIMESTAMP}[{self.timestamp}]{COLOR_RESET} "
+                           f"{colored_padded_hostname}: "
+                           f"🕓️ Uptime: {COLOR_UPTIME}{self.uptime_str}{COLOR_RESET} | "
+                           f"⚡️ Hash: {COLOR_HASHRATE}{self.hashrate} GH/s{COLOR_RESET} | "
+                           f"🌡️ ASIC: {COLOR_ASIC_TEMP}{asic_temp_str}°C{COLOR_RESET} / "
+                           f"VR: {COLOR_VR_TEMP}{self.vr_temp}°C{COLOR_RESET} | "
+                           f"✅ Shares: {COLOR_SHARES}{self.shares}{COLOR_RESET} | "
+                           f"↩️ Restarts: {COLOR_RESTARTS}{self.restart_count}{COLOR_RESET}")
+        self.console_logger.info(console_message)
+        file_message = (f"[{self.timestamp}] {self.hostname}: "
+                        f"🕓️ Uptime: {self.uptime_str} | "
+                        f"⚡️ Hash: {self.hashrate} GH/s | "
+                        f"🌡️ ASIC: {asic_temp_str}°C / VR: {self.vr_temp}°C | "
+                        f"✅ Shares: {self.shares} | "
+                        f"↩️ Restarts: {self.restart_count}")
+        self.file_logger.info(file_message)
 
+# Main script
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Monitor Bitaxe and restart on stagnant shares.")
-    parser.add_argument("ip", help="IP address of the Bitaxe device (e.g. 192.168.2.88)")
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="Monitor Bitaxe(s) and restart on stagnant shares.")
+    parser.add_argument("ip", nargs="?", help="IP address of the Bitaxe device. If not provided, read from bitaxes.conf")
     parser.add_argument("-interval", "-i", type=int, default=60, help="Time interval between checks in seconds (default: 60)")
     args = parser.parse_args()
 
-    monitor_bitaxe(args.ip, args.interval)
+    # Determine IPs and retain_log_days
+    if args.ip:
+        ips = [args.ip]
+        retain_log_days = 7
+    else:
+        try:
+            with open("bitaxes.conf", "r") as f:
+                lines = f.readlines()
+            ips = []
+            settings = {}
+            for line in lines:
+                line = line.strip()
+                if line.startswith("#") or not line:
+                    continue
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    settings[key.strip()] = value.strip()
+                else:
+                    ips.append(line)
+            retain_log_days = int(settings.get("retain-log-days", 7))
+        except FileNotFoundError:
+            print("Configuration file bitaxes.conf not found.")
+            sys.exit(1)
+        except ValueError:
+            print("Invalid value for retain-log-days in configuration file.")
+            sys.exit(1)
+
+    # Create logs directory
+    os.makedirs("logs", exist_ok=True)
+
+    # Set up console logger
+    console_logger = logging.getLogger("console")
+    console_handler = logging.StreamHandler()
+    console_formatter = logging.Formatter("%(message)s")
+    console_handler.setFormatter(console_formatter)
+    console_logger.addHandler(console_handler)
+    console_logger.setLevel(logging.INFO)
+    console_logger.propagate = False
+
+    # Create monitors for each IP
+    monitors = []
+    for ip in ips:
+        file_logger = logging.getLogger(f"file_{ip}")
+        file_handler = TimedRotatingFileHandler(f"logs/{ip}.log", when="midnight", backupCount=retain_log_days, encoding='utf-8')
+        file_formatter = logging.Formatter("%(message)s")
+        file_handler.setFormatter(file_formatter)
+        file_logger.addHandler(file_handler)
+        file_logger.setLevel(logging.INFO)
+        file_logger.propagate = False
+        monitor = BitaxeMonitor(ip, args.interval, file_logger, console_logger)
+        monitors.append(monitor)
+
+    # Log startup message
+    startup_message = f"Monitoring Bitaxes: {', '.join(ips)} with interval {args.interval} seconds"
+    console_logger.info(startup_message)
+
+    # Main monitoring loop
+    while True:
+        # Update all monitors
+        for monitor in monitors:
+            monitor.update_status()
+        # Collect all hostnames
+        all_hostnames = [m.hostname for m in monitors]
+        if all_hostnames:
+            max_len = max(len(h) for h in all_hostnames)
+        else:
+            max_len = 0
+        # Print all with padding
+        for monitor in monitors:
+            monitor.print_status(max_len)
+        if len(monitors) > 1:
+            print("---------------------------------------------------------------------------------------------------------------------------------------------------")
+        countdown_timer(args.interval)
